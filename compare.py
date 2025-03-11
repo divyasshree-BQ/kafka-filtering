@@ -11,9 +11,6 @@ bq_data['Processing Time'] = pd.to_datetime(bq_data['Processing Time'])
 # Assuming 'data' field in pump_data contains JSON-like string with 'signature' key
 pump_data['tx_signature'] = pump_data['data'].apply(lambda x: eval(x).get('signature'))
 
-# Since the bq_data is already processed to have 'Transaction Signature' directly, no need to extract from JSON
-# Ensure that the 'Transaction Signature' in bq_data is ready to be used
-
 # Merge data on transaction signature
 merged_data = pd.merge(pump_data, bq_data, left_on='tx_signature', right_on='Transaction Signature', how='inner')
 
