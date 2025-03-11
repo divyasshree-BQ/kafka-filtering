@@ -4,21 +4,19 @@ import os
 import threading
 import queue
 import time
-import uuid  # Import the uuid module
+import uuid
 from datetime import datetime
 from confluent_kafka import Consumer, KafkaError
 
-username = 'usernameee'
-password = 'pwwww'
-topic = 'solana.instructions'  # Topic for instructions
+username = 'usernameeee'
+password = 'pwww'
+topic = 'solana.instructions'
 
-# Generate a random UUID for the group ID suffix
-group_id_suffix = uuid.uuid4().hex  
+group_id_suffix = uuid.uuid4().hex
 
-# Kafka consumer configuration
 conf = {
     'bootstrap.servers': 'rpk0.bitquery.io:9093,rpk1.bitquery.io:9093,rpk2.bitquery.io:9093',
-    'group.id': f'{username}-ec2group-{group_id_suffix}',  # Use the random UUID here
+    'group.id': f'{username}-ec2group-{group_id_suffix}',
     'session.timeout.ms': 30000,
     'security.protocol': 'SASL_SSL',
     'ssl.ca.location': 'server.cer.pem',
@@ -29,17 +27,15 @@ conf = {
     'sasl.username': username,
     'sasl.password': password,
     'auto.offset.reset': 'latest',
-    "enable.auto.commit": False,
+    'enable.auto.commit': False,
 }
 
 TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 FILTER_ADDRESS = "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"
 
-# Create a queue for passing messages between threads
 msg_queue = queue.Queue(maxsize=10000)
 
 def consumer_thread(consumer, msg_queue):
-    """Thread to consume messages from Kafka and put them in the queue."""
     while True:
         msg = consumer.poll(timeout=1.0)
         if msg is None:
@@ -52,41 +48,59 @@ def consumer_thread(consumer, msg_queue):
                 continue
         msg_queue.put(msg)
 
-def filter_thread(msg_queue, writer, csv_file):
-    """Thread to filter messages from the queue and write to CSV."""
+def process_transaction(transaction, batch, kafka_timestamp):
+    transaction_details = transaction.get("Transaction")
+    if not transaction_details:
+        return
+
+    transaction_signature = transaction_details.get("Signature", "N/A")
+    instructions = transaction.get("Instructions", [])
+
+    for instruction in instructions:
+        program = instruction.get("Program", {})
+        if program.get("Address") != TOKEN_PROGRAM_ID:
+            continue
+
+        for account in instruction.get("Accounts", []):
+            if account and account.get("Address") == FILTER_ADDRESS:
+                signer = account.get("IsSigner", False)
+                processing_time = datetime.now().isoformat()
+                batch.append([
+                    transaction_signature,
+                    account.get("Address"),
+                    signer,
+                    processing_time,
+                    kafka_timestamp
+                ])
+
+def filter_thread(msg_queue, writer, csv_file, batch_size=500):
+    batch = []
+    csv_lock = threading.Lock()
+
     while True:
-        msg = msg_queue.get()  # Blocks until a message is available
+        msg = msg_queue.get()
         try:
             buffer = msg.value().decode('utf-8')
+
+            # Extract Kafka timestamp
+            timestamp_type, msg_timestamp = msg.timestamp()
+
+            # Convert Kafka timestamp to ISO format
+            kafka_timestamp_iso = datetime.fromtimestamp(msg_timestamp / 1000).isoformat() if msg_timestamp else 'N/A'
+
             transaction_data = json.loads(buffer)
+
             if not isinstance(transaction_data, list):
                 transaction_data = [transaction_data]
 
             for transaction in transaction_data:
-                transaction_details = transaction.get("Transaction")
-                if not transaction_details:
-                    print("Missing 'Transaction' detail in data")
-                    continue
+                process_transaction(transaction, batch, kafka_timestamp_iso)
 
-                transaction_signature = transaction_details.get("Signature", "N/A")
-                instructions = transaction.get("Instructions")
-                if not instructions:
-                    continue
-
-                for instruction in instructions:
-                    if instruction.get("Program", {}).get("Address") != TOKEN_PROGRAM_ID:
-                        continue
-
-                    accounts = instruction.get("Accounts", [])
-                    if not accounts:
-                        continue
-
-                    for account in accounts:
-                        if account and account.get("Address") == FILTER_ADDRESS:
-                            signer = account.get("IsSigner", False)
-                            processing_time = datetime.now().isoformat()
-                            writer.writerow([transaction_signature, account.get("Address"), signer, processing_time])
-                            csv_file.flush()
+            if len(batch) >= batch_size:
+                with csv_lock:
+                    writer.writerows(batch)
+                    csv_file.flush()
+                batch.clear()
 
         except json.JSONDecodeError:
             print(f"Error parsing JSON: {buffer}")
@@ -95,20 +109,31 @@ def filter_thread(msg_queue, writer, csv_file):
         finally:
             msg_queue.task_done()
 
+        if len(batch) > 0 and msg_queue.empty():
+            with csv_lock:
+                writer.writerows(batch)
+                csv_file.flush()
+            batch.clear()
+
 def main():
     output_file = 'bq.csv'
     file_exists = os.path.exists(output_file)
-    # Open CSV once and pass the writer to the filtering thread
+
     with open(output_file, 'a', newline='') as csv_file:
         writer = csv.writer(csv_file)
         if not file_exists:
-            writer.writerow(['Transaction Signature', 'Account Address', 'Signer', 'Processing Time'])
+            writer.writerow([
+                'Transaction Signature',
+                'Account Address',
+                'Signer',
+                'Processing Time',
+                'Kafka Timestamp'
+            ])
             csv_file.flush()
 
         consumer = Consumer(conf)
         consumer.subscribe([topic])
 
-        # Create and start threads
         t1 = threading.Thread(target=consumer_thread, args=(consumer, msg_queue), daemon=True)
         t2 = threading.Thread(target=filter_thread, args=(msg_queue, writer, csv_file), daemon=True)
 
