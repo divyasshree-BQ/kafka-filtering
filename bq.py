@@ -50,13 +50,13 @@ def process_messages(consumer, writer, csv_file):
             for transaction in transaction_data:
                 transaction_details = transaction.get("Transaction")
                 if not transaction_details:
-                    print("Missing 'Transaction' detail in data")
+                    # print("Missing 'Transaction' detail in data")
                     continue
 
                 transaction_signature = transaction_details.get("Signature", "N/A")
                 instructions = transaction.get("Instructions")
                 if not instructions:
-                    print(f"No instructions in transaction, Signature: {transaction_signature}")
+                    # print(f"No instructions in transaction, Signature: {transaction_signature}")
                     continue
 
                 for instruction in instructions:
@@ -65,7 +65,7 @@ def process_messages(consumer, writer, csv_file):
 
                     accounts = instruction.get("Accounts", [])
                     if not accounts:
-                        print(f"No accounts to process for this instruction, Signature: {transaction_signature}")
+                        # print(f"No accounts to process for this instruction, Signature: {transaction_signature}")
                         continue
 
                     for account in accounts:
